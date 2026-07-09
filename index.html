@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>BLIND FIRE — Prototype</title>
+<style>
+  html, body { margin:0; padding:0; background:#000; overflow:hidden; font-family: 'Courier New', monospace; }
+  #ui {
+    position:absolute; top:0; left:0; width:100%; pointer-events:none;
+    color:#c8ffe0; padding:14px; box-sizing:border-box; z-index:10;
+  }
+  #ui .row { display:flex; justify-content:space-between; }
+  #hint {
+    position:absolute; bottom:10px; left:0; width:100%; text-align:center;
+    color:#5a7a6a; font-size:12px; letter-spacing:1px; z-index:10; pointer-events:none;
+  }
+  #overlay {
+    position:absolute; top:0; left:0; width:100%; height:100%;
+    background:rgba(0,0,0,0.88); color:#c8ffe0; display:none;
+    flex-direction:column; align-items:center; justify-content:center; z-index:20;
+    text-align:center;
+  }
+  #overlay h1 { font-size:32px; letter-spacing:4px; margin-bottom:6px; }
+  #overlay p { font-size:14px; color:#8fb8a0; margin:4px 0; max-width:420px; }
+  #overlay .stat { font-size:20px; color:#ffcf6b; margin:14px 0 4px; }
+  #overlay button {
+    margin-top:20px; padding:10px 26px; background:transparent; border:1px solid #c8ffe0;
+    color:#c8ffe0; font-family:inherit; letter-spacing:2px; cursor:pointer; font-size:13px;
+  }
+  #overlay button:hover { background:#c8ffe0; color:#000; }
+  #healthbar { width:140px; height:10px; border:1px solid #4a6a5a; margin-top:4px; }
+  #healthfill { height:100%; background:#ff5b5b; width:100%; transition:width 0.2s; }
+</style>
+</head>
+<body>
+<div id="introOverlay" style="position:absolute; top:0; left:0; width:100%; height:100%; background:#000; color:#c8ffe0; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:30; text-align:center; font-family:'Courier New', monospace; padding:30px; box-sizing:border-box;">
+  <div style="max-width:560px;">
+    <div style="letter-spacing:6px; color:#5a7a6a; font-size:12px; margin-bottom:18px;">— CLASSIFIED BRIEFING —</div>
+    <p style="font-size:15px; line-height:1.8; color:#8fb8a0; text-align:left;">
+      You lost your sight years ago. What you gained instead, the agency never quite knew how to write up in a report.<br><br>
+      Every surface has a sound. Every footstep has a shape. You don't see the world — you hear its outline, for half a second at a time, before it fades back to black.<br><br>
+      Tonight's target: a cruise liner running dark through international waters, decks packed with product no manifest will ever mention. The deeper you go, the more of them are waiting.<br><br>
+      Send out a pulse to read the room. Stay quiet too long and you're blind. Pulse too often and they'll hear you coming. Find the exit on each deck before they find you first.
+    </p>
+    <div style="margin-top:26px; font-size:12px; color:#5a7a6a; letter-spacing:1px;">WASD move · MOUSE aim · SPACE sonar pulse · CLICK shoot</div>
+    <button id="beginBtn" style="margin-top:24px; padding:12px 34px; background:transparent; border:1px solid #c8ffe0; color:#c8ffe0; font-family:inherit; letter-spacing:3px; cursor:pointer; font-size:13px;">BEGIN</button>
+  </div>
+</div>
+<div id="ui">
+  <div class="row">
+    <div>PINGS: <span id="pingCount">0</span></div>
+    <div>ALERT: <span id="alertState">calm</span></div>
+  </div>
+  <div class="row" style="margin-top:4px; font-size:12px; color:#8fb8a0;">
+    <div>BEST: <span id="bestStat">—</span></div>
+    <div>STREAK: <span id="streakStat">0</span> day(s)</div>
+  </div>
+  <div id="healthbar"><div id="healthfill"></div></div>
+</div>
+<div id="hint">WASD move · MOUSE aim · SPACE sonar pulse · CLICK shoot</div>
+<div id="overlay">
+  <h1 id="overlayTitle">CAUGHT</h1>
+  <p id="overlaySub"></p>
+  <div class="stat" id="overlayStat"></div>
+  <p id="overlayHook"></p>
+  <button onclick="location.reload()">RETRY</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.60.0/phaser.min.js"></script>
+<script>
+// ---------- CONFIG ----------
+const W = window.innerWidth, H = window.innerHeight;
+const PULSE_RADIUS = 260;
+const PULSE_DURATION = 1400;
+const PULSE_COOLDOWN = 550;
+const NOISE_RADIUS_PULSE = 320;
+const NOISE_RADIUS_SHOT = 420;
+const BEST_PING_TARGET = 7;
+const WALL_BASELINE_ALPHA = 0.1;    // bare-minimum dim visibility, always on
+const ALERT_DECAY_PER_SEC = 0.18;   // faster cool-down than before
+const CHASE_THRESHOLD = 0.2;
+const HUNT_THRESHOLD = 0.6;
+const WT = 50; // wall thickness — thick enough to read as an actual wall, not a line
+
+// 4-turn snake maze: 4 interior walls with alternating gaps (left/right/left/right)
+// creates 5 bands the player must weave through to reach the exit.
+const WALLS = [
+  {x:0,y:0,w:W,h:20}, {x:0,y:H-20,w:W,h:20}, {x:0,y:0,w:20,h:H}, {x:W-20,y:0,w:20,h:H},
+  {x:W*0.22, y:H*0.20, w:W*0.78, h:WT},   // gap on LEFT
+  {x:0,      y:H*0.40, w:W*0.78, h:WT},   // gap on RIGHT
+  {x:W*0.22, y:H*0.60, w:W*0.78, h:WT},   // gap on LEFT
+  {x:0,      y:H*0.80, w:W*0.78, h:WT},   // gap on RIGHT
+];
+const EXIT = {x: W-140, y: H-140, w:70, h:70};
+
+const ENEMY_SPAWNS = [
+  {x: W*0.6, y: H*0.10},
+  {x: W*0.4, y: H*0.50},
+  {x: W*0.5, y: H*0.90},
+];
+
+// ---------- PERSISTENCE (personal best + daily streak) ----------
+const STORE_KEY = 'blindfire_stats_v1';
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function loadStats(){
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return { bestPings: null, lastPlayDate: null, streak: 0 };
+    return JSON.parse(raw);
+  } catch(e){ return { bestPings: null, lastPlayDate: null, streak: 0 }; }
+}
+function saveStats(stats){
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(stats)); } catch(e){ /* storage unavailable */ }
+}
+function bumpStreakOnSessionStart(stats){
+  const today = todayStr();
+  if (stats.lastPlayDate === today){
+    // already played today, streak unchanged
+  } else {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0,10);
+    stats.streak = (stats.lastPlayDate === yesterday) ? stats.streak + 1 : 1;
+    stats.lastPlayDate = today;
+  }
+  saveStats(stats);
+  return stats;
+}
+
+class MainScene extends Phaser.Scene {
+  constructor(){ super('main'); }
+
+  create(){
+    this.cameras.main.setBackgroundColor('#000000');
+    this.pulses = [];
+    this.pings = 0;
+    this.health = 100;
+    this.gameOver = false;
+    this.lastPulseTime = 0;
+    this.startTime = this.time.now;
+
+    this.g = this.add.graphics();
+    this.player = { x: 70, y: 70, r: 10, angle: 0 };
+
+    this.stats = bumpStreakOnSessionStart(loadStats());
+    document.getElementById('bestStat').textContent = this.stats.bestPings === null ? '—' : this.stats.bestPings;
+    document.getElementById('streakStat').textContent = this.stats.streak;
+
+    this.enemies = ENEMY_SPAWNS.map(s => ({
+      x: s.x, y: s.y, r: 14, alive: true, speed: 90, alertLevel: 0
+    }));
+
+    // capture SPACE so the browser doesn't scroll the page / steal focus
+    this.input.keyboard.addCapture('SPACE');
+    this.keys = this.input.keyboard.addKeys('W,A,S,D,UP,LEFT,DOWN,RIGHT,SPACE');
+    this.mouse = { x: W/2, y: H/2 };
+    this.input.on('pointermove', p => { this.mouse.x = p.x; this.mouse.y = p.y; });
+    this.input.on('pointerdown', () => this.shoot());
+    this.bullets = [];
+
+    document.getElementById('pingCount').textContent = '0';
+  }
+
+  emitPulse(){
+    const t = this.time.now;
+    if (t - this.lastPulseTime < PULSE_COOLDOWN) return;
+    this.lastPulseTime = t;
+    this.pulses.push({x:this.player.x, y:this.player.y, born:t});
+    this.pings++;
+    document.getElementById('pingCount').textContent = this.pings;
+    this.makeNoise(NOISE_RADIUS_PULSE, 0.35);
+  }
+
+  shoot(){
+    if (this.gameOver) return;
+    const dx = this.mouse.x - this.player.x, dy = this.mouse.y - this.player.y;
+    const len = Math.hypot(dx,dy) || 1;
+    this.bullets.push({x:this.player.x, y:this.player.y, vx: dx/len*600, vy: dy/len*600, life: 900});
+    this.makeNoise(NOISE_RADIUS_SHOT, 0.6);
+  }
+
+  makeNoise(radius, strength){
+    for (const e of this.enemies){
+      if (!e.alive) continue;
+      const d = Phaser.Math.Distance.Between(this.player.x,this.player.y,e.x,e.y);
+      if (d <= radius) e.alertLevel = Math.min(1, e.alertLevel + strength);
+    }
+  }
+
+  currentReveal(px, py){
+    const t = this.time.now;
+    let vis = 0;
+    for (const p of this.pulses){
+      const age = t - p.born;
+      if (age > PULSE_DURATION) continue;
+      const d = Phaser.Math.Distance.Between(px,py,p.x,p.y);
+      if (d > PULSE_RADIUS) continue;
+      const fade = 1 - (age / PULSE_DURATION);
+      const falloff = 1 - (d / PULSE_RADIUS);
+      vis = Math.max(vis, fade * falloff);
+    }
+    return vis;
+  }
+
+  update(time, delta){
+    if (this.gameOver) return;
+    const dt = delta/1000;
+
+    this.pulses = this.pulses.filter(p => time - p.born < PULSE_DURATION);
+
+    let mx=0,my=0;
+    if (this.keys.W.isDown || this.keys.UP.isDown) my -= 1;
+    if (this.keys.S.isDown || this.keys.DOWN.isDown) my += 1;
+    if (this.keys.A.isDown || this.keys.LEFT.isDown) mx -= 1;
+    if (this.keys.D.isDown || this.keys.RIGHT.isDown) mx += 1;
+    const mlen = Math.hypot(mx,my)||1;
+    const speed = 160;
+    let nx = this.player.x + (mx/mlen)*speed*dt;
+    let ny = this.player.y + (my/mlen)*speed*dt;
+    if (!this.hitsWall(nx, this.player.y, this.player.r)) this.player.x = nx;
+    if (!this.hitsWall(this.player.x, ny, this.player.r)) this.player.y = ny;
+    this.player.angle = Math.atan2(this.mouse.y-this.player.y, this.mouse.x-this.player.x);
+
+    if (Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) this.emitPulse();
+
+    // per-enemy alert decay + behavior
+    let maxAlert = 0;
+    for (const e of this.enemies){
+      if (!e.alive) continue;
+      e.alertLevel = Math.max(0, e.alertLevel - ALERT_DECAY_PER_SEC*dt);
+      maxAlert = Math.max(maxAlert, e.alertLevel);
+
+      if (e.alertLevel > CHASE_THRESHOLD){
+        const d = Phaser.Math.Distance.Between(e.x,e.y,this.player.x,this.player.y);
+        if (d > 4){
+          const ang = Math.atan2(this.player.y-e.y, this.player.x-e.x);
+          e.x += Math.cos(ang)*e.speed*dt;
+          e.y += Math.sin(ang)*e.speed*dt;
+        }
+      } else {
+        e.x += Math.sin((time+e.x)/900)*10*dt;
+      }
+
+      const dPlayer = Phaser.Math.Distance.Between(e.x,e.y,this.player.x,this.player.y);
+      if (dPlayer < e.r + this.player.r + 4){
+        this.health -= 40*dt;
+        document.getElementById('healthfill').style.width = Math.max(0,this.health)+'%';
+        if (this.health <= 0) return this.endGame(false);
+      }
+    }
+    document.getElementById('alertState').textContent =
+      maxAlert > HUNT_THRESHOLD ? 'HUNTING' : maxAlert > CHASE_THRESHOLD ? 'suspicious' : 'calm';
+
+    for (const b of this.bullets){
+      b.x += b.vx*dt; b.y += b.vy*dt; b.life -= delta;
+      for (const e of this.enemies){
+        if (!e.alive) continue;
+        const d = Phaser.Math.Distance.Between(b.x,b.y,e.x,e.y);
+        if (d < e.r+6){ e.alive = false; b.life = 0; }
+      }
+    }
+    this.bullets = this.bullets.filter(b => b.life > 0 && b.x>0 && b.x<W && b.y>0 && b.y<H);
+
+    if (this.player.x > EXIT.x && this.player.x < EXIT.x+EXIT.w &&
+        this.player.y > EXIT.y && this.player.y < EXIT.y+EXIT.h){
+      return this.endGame(true);
+    }
+
+    this.render();
+  }
+
+  hitsWall(x,y,r){
+    for (const w of WALLS){
+      if (x+r > w.x && x-r < w.x+w.w && y+r > w.y && y-r < w.y+w.h) return true;
+    }
+    return false;
+  }
+
+  render(){
+    const g = this.g;
+    g.clear();
+
+    for (const w of WALLS){
+      const cx = w.x+w.w/2, cy = w.y+w.h/2;
+      const vis = Math.max(
+        this.currentReveal(w.x,w.y), this.currentReveal(w.x+w.w,w.y),
+        this.currentReveal(w.x,w.y+w.h), this.currentReveal(w.x+w.w,w.y+w.h),
+        this.currentReveal(cx,cy)
+      );
+      const alpha = Math.max(WALL_BASELINE_ALPHA, vis);
+      g.fillStyle(0x2a6b52, alpha);
+      g.fillRect(w.x,w.y,w.w,w.h);
+      if (vis > 0.05){
+        g.lineStyle(2, 0x7fffd4, Math.min(1, vis*1.2));
+        g.strokeRect(w.x,w.y,w.w,w.h);
+      }
+    }
+
+    {
+      const vis = this.currentReveal(EXIT.x+EXIT.w/2, EXIT.y+EXIT.h/2);
+      const alpha = Math.max(WALL_BASELINE_ALPHA, vis);
+      g.fillStyle(0xffcf6b, alpha);
+      g.fillRect(EXIT.x,EXIT.y,EXIT.w,EXIT.h);
+    }
+
+    for (const e of this.enemies){
+      if (!e.alive) continue;
+      const vis = this.currentReveal(e.x, e.y);
+      const shown = Math.max(vis, e.alertLevel > HUNT_THRESHOLD ? 0.5 : 0);
+      if (shown > 0.02){
+        g.fillStyle(0xff5b5b, shown);
+        g.fillCircle(e.x, e.y, e.r);
+      }
+    }
+
+    const t = this.time.now;
+    for (const p of this.pulses){
+      const age = t - p.born;
+      const fade = 1 - age/PULSE_DURATION;
+      if (fade <= 0) continue;
+      g.lineStyle(2, 0x7fffd4, fade*0.5);
+      g.strokeCircle(p.x, p.y, PULSE_RADIUS*Math.min(1, age/220));
+    }
+
+    g.fillStyle(0x7fffd4, 1);
+    g.fillCircle(this.player.x, this.player.y, this.player.r);
+    g.lineStyle(2, 0x7fffd4, 0.9);
+    g.beginPath();
+    g.moveTo(this.player.x, this.player.y);
+    g.lineTo(this.player.x+Math.cos(this.player.angle)*22, this.player.y+Math.sin(this.player.angle)*22);
+    g.strokePath();
+
+    g.fillStyle(0xffffff, 1);
+    for (const b of this.bullets) g.fillCircle(b.x,b.y,3);
+  }
+
+  endGame(won){
+    this.gameOver = true;
+    const overlay = document.getElementById('overlay');
+    const seconds = ((this.time.now - this.startTime)/1000).toFixed(1);
+    document.getElementById('overlayTitle').textContent = won ? 'ESCAPED' : 'CAUGHT';
+    document.getElementById('overlaySub').textContent = won
+      ? 'You found the exit using sound alone.'
+      : 'One of the hunters found you. Every pulse and shot gives your position away.';
+    document.getElementById('overlayStat').textContent = `Pings used: ${this.pings}  ·  Time: ${seconds}s`;
+
+    let hook;
+    if (won){
+      const prevBest = this.stats.bestPings;
+      const isNewBest = prevBest === null || this.pings < prevBest;
+      if (isNewBest){
+        this.stats.bestPings = this.pings;
+        saveStats(this.stats);
+        hook = prevBest === null
+          ? `First clear — ${this.pings} pings is now your best. Come back tomorrow and try to beat it.`
+          : `NEW BEST! Down from ${prevBest} to ${this.pings} pings. Streak: ${this.stats.streak} day(s) — keep it going tomorrow.`;
+      } else {
+        hook = `Your best is still ${prevBest} pings. Streak: ${this.stats.streak} day(s) — come back tomorrow for another run.`;
+      }
+    } else {
+      hook = this.stats.bestPings !== null
+        ? `Your best clear is ${this.stats.bestPings} pings. Streak: ${this.stats.streak} day(s) — try again tomorrow.`
+        : `No clear yet. Come back and get your first one in.`;
+    }
+    document.getElementById('overlayHook').textContent = hook;
+    document.getElementById('bestStat').textContent = this.stats.bestPings === null ? '—' : this.stats.bestPings;
+    overlay.style.display = 'flex';
+  }
+}
+
+function startGame(){
+  document.getElementById('introOverlay').style.display = 'none';
+  new Phaser.Game({
+    type: Phaser.AUTO,
+    width: W, height: H,
+    parent: document.body,
+    scene: MainScene,
+    render: { antialias: true }
+  });
+}
+document.getElementById('beginBtn').addEventListener('click', startGame);
+</script>
+</body>
+</html>
